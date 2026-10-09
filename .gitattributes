@@ -1,0 +1,4 @@
+# Archive data: collapsed in diffs and left out of language stats
+summary.json linguist-generated=true -diff
+daily/** linguist-generated=true -diff
+raw/** binary

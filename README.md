@@ -1,7 +1,106 @@
-# Milky Way Idle market archive
-`raw/YYYY-MM-DD/HH.json.gz`: immutable official snapshot bytes, gzip-compressed and named by the snapshot's UTC timestamp; collected hourly at :15 UTC by `scripts/collect.mjs` (Node 24, built-ins only).
-`daily/YYYY-MM/0.json`: `{days:[UTC dates],items:{hrid:[[a,b,p,v]|null,...]}}`; `enhanced.json` nests rows under `items[hrid][level]` for levels >0. Days ascend and rows align; null means unseen. Daily a/b are rounded medians of positive hourly quotes, p is rounded volume-weighted trade price, v is summed hourly trade volume; absent prices are null and no trades is 0 volume.
-`summary.json`: `{timestamp,items:{hrid:{level:[p7,v7,a7,b7]}}}` for the latest seven UTC days with data (including a partial current day): exact volume-weighted p7 rounded to integer, total volume / data-day count rounded to one decimal, and rounded medians of positive daily a/b. Timestamp is the latest official snapshot's Unix seconds. `daily/YYYY-MM/trades.json` is internal aligned `{days,items:{hrid:{level:[[sum(p*v),sum(v)]|null,...]}}}` for exact summary calculation without rounding daily p twice. All JSON is compact.
-`node scripts/backfill.mjs` performs a one-time sequential, throttled q7 level-0 import (365 days requested), only before the earliest committed official raw day; it never creates raw snapshots. After that import, collection depends only on the official source and this repository. Backfill has no enhanced history; missing hours are not interpolated. `node --test scripts/archive.test.mjs` checks aggregation boundaries.
-Initial q7 import covers 2026-03-10 through 2026-10-08: 872 items, 4,214,338 hourly rows, 213 UTC days. Official immutable collection starts 2026-10-09 at 02:06 UTC; that first day is partial.
-GitHub may delay cron jobs and disables scheduled workflows in public repositories after 60 days without repository activity; monitor collection freshness. Raw growth is roughly 1 MB/day plus daily aggregates and Git history. Consumers can fetch files from `https://raw.githubusercontent.com/SeaL773/mwi-market-history/main/`.
+# MWI Market History
+
+[![Collect](https://github.com/SeaL773/mwi-market-history/actions/workflows/collect.yml/badge.svg)](https://github.com/SeaL773/mwi-market-history/actions/workflows/collect.yml)
+[![Last update](https://img.shields.io/github/last-commit/SeaL773/mwi-market-history?label=last%20update)](https://github.com/SeaL773/mwi-market-history/commits/main)
+
+Hourly archive of the official [Milky Way Idle](https://www.milkywayidle.com/) marketplace snapshot, with daily
+aggregates and a 7-day summary. It powers the market history in
+[MWI Combat Simulator](https://seal773.github.io/MWICombatSimulatorTest/) price settings and is free for anyone to use.
+
+- **Official source only.** Every hour a GitHub Action saves `marketplace.json` from the game, byte for byte.
+- **Static files.** No API or server: fetch JSON straight from GitHub, CORS enabled.
+- **Small reads.** The 7-day summary of every item is about 27 KB gzipped.
+
+## Using the data
+
+Base URL: `https://raw.githubusercontent.com/SeaL773/mwi-market-history/main/`
+
+| File | Content | Size |
+| --- | --- | --- |
+| [`summary.json`](summary.json) | Last 7 days for every item and enhancement level | ~110 KB (~27 KB gzip) |
+| `daily/YYYY-MM/0.json` | Daily ask, bid, average price and volume of unenhanced items | ~650 KB per month |
+| `daily/YYYY-MM/enhanced.json` | The same for enhancement levels above 0 | varies |
+| `raw/YYYY-MM-DD/HH.json.gz` | The official snapshot, gzip-compressed, named by its UTC time | ~30 KB each |
+
+```js
+const BASE = "https://raw.githubusercontent.com/SeaL773/mwi-market-history/main/";
+const summary = await fetch(BASE + "summary.json").then((r) => r.json());
+const [avg7, volumePerDay, ask7, bid7] = summary.items["/items/holy_cheese"]["0"];
+```
+
+All dates and hours are UTC. `null` means no data; a day without trades has volume `0`.
+
+## File formats
+
+### `summary.json`
+
+```jsonc
+{
+  "timestamp": 1791511560, // Unix seconds of the latest official snapshot
+  "items": {
+    "/items/abyssal_essence": {
+      "0": [184, 13492777.1, 185, 182] // [avg7, volume7, ask7, bid7] for enhancement level 0
+    }
+  }
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `avg7` | Volume-weighted average trade price over the last 7 days with data, rounded |
+| `volume7` | Average daily trade volume over those days, one decimal |
+| `ask7` / `bid7` | Median of the daily best ask / best bid |
+
+The window includes the current, partial day.
+
+### `daily/YYYY-MM/0.json`
+
+```jsonc
+{
+  "days": ["2026-10-01", "2026-10-02"],
+  "items": {
+    "/items/abyssal_essence": [[187, 184, 185, 10147503], null] // one row per day: [ask, bid, avg, volume]
+  }
+}
+```
+
+Rows line up with `days`. `ask` and `bid` are medians of the hourly quotes, `avg` is the volume-weighted trade price,
+`volume` is the day's total. `enhanced.json` has the same layout with rows nested by level:
+`items[hrid][level] = [[ask, bid, avg, volume] | null, ...]`.
+
+`trades.json` holds exact `[sum(price × volume), sum(volume)]` pairs used to build the summary without rounding twice;
+consumers don't need it.
+
+### `raw/YYYY-MM-DD/HH.json.gz`
+
+The game's `marketplace.json` exactly as served, `{ timestamp, marketData: { hrid: { level: { a, b, p, v } } } }`,
+where `a`/`b` are the best ask/bid and `p`/`v` the last hour's average trade price and volume.
+
+## Coverage
+
+| Period | Source | Levels |
+| --- | --- | --- |
+| 2026-03-10 to 2026-10-08 | One-time import from [Mooket](https://q7.nainai.eu.org/) history | 0 only |
+| 2026-10-09 02:06 UTC onward | Official hourly snapshots | All |
+
+Missing hours are never interpolated.
+
+## How it works
+
+[`collect.yml`](.github/workflows/collect.yml) runs at minute 15 of every hour, a few minutes after the game publishes a
+new snapshot. [`scripts/collect.mjs`](scripts/collect.mjs) (Node 24, no dependencies) saves the raw file, rebuilds that
+day's rows and regenerates `summary.json`. The workflow checks out only `scripts/`, `daily/` and the current raw day, so
+the job stays fast as the archive grows.
+
+```sh
+node --test scripts/archive.test.mjs   # aggregation tests
+node scripts/collect.mjs               # collect the current snapshot locally
+```
+
+`scripts/backfill.mjs` was the one-time Mooket import; it only writes days before the first official snapshot.
+
+## Notes
+
+- GitHub can delay or skip scheduled runs; check the badge above or the `timestamp` in `summary.json` for freshness.
+- GitHub disables scheduled workflows after 60 days without repository activity. The hourly commits keep it active.
+- Raw snapshots add about 700 KB per day.
