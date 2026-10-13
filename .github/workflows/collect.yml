@@ -1,12 +1,6 @@
 name: Collect official market snapshot
 
-# The inherit monitor uploads each hourly snapshot to raw/ right after it is published (pushed with a personal token,
-# so it triggers this workflow; commits made here with GITHUB_TOKEN do not). Those pushes only rebuild daily/ and
-# summary.json; the schedule stays as a fallback that fetches the snapshot itself.
 on:
-  push:
-    branches: [main]
-    paths: ['raw/**']
   schedule:
     - cron: '15 * * * *'
   workflow_dispatch:
@@ -33,8 +27,8 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: '24'
-      - name: Archive the official snapshot, or rebuild days from pushed raw snapshots
-        run: node scripts/collect.mjs --sparse ${{ github.event_name == 'push' && '--aggregate' || '' }}
+      - name: Fetch and aggregate the official snapshot
+        run: node scripts/collect.mjs --sparse
       - name: Commit and push archive updates
         shell: bash
         run: |
