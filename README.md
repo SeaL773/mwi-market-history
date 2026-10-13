@@ -7,7 +7,7 @@ Hourly archive of the official [Milky Way Idle](https://www.milkywayidle.com/) m
 aggregates and a 7-day summary. It powers the market history in
 [MWI Combat Simulator](https://seal773.github.io/MWICombatSimulatorTest/) price settings and is free for anyone to use.
 
-- **Official source only.** Every hour a GitHub Action saves `marketplace.json` from the game, byte for byte.
+- **Official source only.** Every hourly `marketplace.json` from the game is saved byte for byte.
 - **Static files.** No API or server: fetch JSON straight from GitHub, CORS enabled.
 - **Small reads.** The 7-day summary of every item is about 27 KB gzipped.
 
@@ -87,20 +87,29 @@ Missing hours are never interpolated.
 
 ## How it works
 
-[`collect.yml`](.github/workflows/collect.yml) runs at minute 15 of every hour, a few minutes after the game publishes a
-new snapshot. [`scripts/collect.mjs`](scripts/collect.mjs) (Node 24, no dependencies) saves the raw file, rebuilds that
-day's rows and regenerates `summary.json`. The workflow checks out only `scripts/`, `daily/` and the current raw day, so
-the job stays fast as the archive grows.
+Two collectors write `raw/`:
+
+1. [MWI Inherit Monitor](https://github.com/SeaL773/MWI-inherit-monitor) already polls the game for each new snapshot
+   right after it is published. It uploads the exact bytes as `raw/<day>/<hour>.json.gz`; that push triggers
+   [`collect.yml`](.github/workflows/collect.yml), which runs `scripts/collect.mjs --aggregate` to rebuild the two
+   newest days and `summary.json` from their raw files.
+2. The same workflow also runs at minute 15 of every hour as a fallback: it fetches the snapshot itself, skips it if
+   the hour is already archived, otherwise saves it and rebuilds that day.
+
+[`scripts/collect.mjs`](scripts/collect.mjs) needs Node 24 and no dependencies. The workflow checks out only
+`scripts/`, `daily/` and the raw days it needs, so the job stays fast as the archive grows.
 
 ```sh
 node --test scripts/archive.test.mjs   # aggregation tests
 node scripts/collect.mjs               # collect the current snapshot locally
+node scripts/collect.mjs --aggregate   # rebuild the two newest days from raw/
 ```
 
 `scripts/backfill.mjs` was the one-time Mooket import; it only writes days before the first official snapshot.
 
 ## Notes
 
-- GitHub can delay or skip scheduled runs; check the badge above or the `timestamp` in `summary.json` for freshness.
+- GitHub can delay or skip scheduled runs, so on its own the fallback archives only a few hours a day; hourly coverage
+  depends on the monitor. Check the badge above or the `timestamp` in `summary.json` for freshness.
 - GitHub disables scheduled workflows after 60 days without repository activity. The hourly commits keep it active.
 - Raw snapshots add about 700 KB per day.

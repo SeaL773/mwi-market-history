@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { aggregateSnapshots, mergeDays, readJson, regenerateSummary } from './archive.mjs';
+import { gzipSync } from 'node:zlib';
+import { aggregateSnapshots, mergeDays, readJson, rebuildDays, regenerateSummary } from './archive.mjs';
 
 const snapshot = (marketData) => ({ marketData });
 
@@ -41,6 +42,32 @@ test('summary selects seven data days across months, preserves exact VWAP, and a
     const updated = await readJson(join(root, 'daily/2026-10/0.json'));
     assert.deepEqual(updated.items['/items/test'], [null, zero.items['/items/test'][1], zero.items['/items/test'][2]]);
     assert.deepEqual(updated.items['/items/replacement'], [[4, 2, null, 0], null, null]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('rebuildDays aggregates pushed raw snapshots per day and dates the summary by the newest one', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'mwi-archive-test-'));
+  try {
+    const raw = async (day, hour, quote) => {
+      await mkdir(join(root, 'raw', day), { recursive: true });
+      const timestamp = Date.parse(`${day}T${hour}:06:00Z`) / 1000;
+      await writeFile(join(root, 'raw', day, `${hour}.json.gz`), gzipSync(JSON.stringify({ timestamp, marketData: { '/items/test': { 0: quote } } })));
+      return timestamp;
+    };
+    await raw('2026-10-12', '23', { a: 10, b: 8 });
+    await raw('2026-10-13', '00', { a: 20, b: -1, p: 15, v: 2 });
+    const newest = await raw('2026-10-13', '01', { a: 30, b: 12 });
+    const result = await rebuildDays(root, ['2026-10-12', '2026-10-13', '2026-10-14']);
+    assert.deepEqual(result.days, ['2026-10-12', '2026-10-13'], 'days without raw files are skipped');
+    const zero = await readJson(join(root, 'daily/2026-10/0.json'));
+    assert.deepEqual(zero.days, ['2026-10-12', '2026-10-13']);
+    assert.deepEqual(zero.items['/items/test'], [[10, 8, null, 0], [25, 12, 15, 2]]);
+    assert.equal((await readJson(join(root, 'summary.json'))).timestamp, newest);
+    await writeFile(join(root, 'raw', '2026-10-13', '02.json.gz'), gzipSync(JSON.stringify({ timestamp: newest - 86400, marketData: {} })));
+    await assert.rejects(rebuildDays(root, ['2026-10-13']), /Snapshot day mismatch/, 'a snapshot filed under the wrong day is refused');
+    assert.equal(await rebuildDays(root, ['2026-09-01']), null, 'nothing to rebuild');
   } finally {
     await rm(root, { recursive: true, force: true });
   }

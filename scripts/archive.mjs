@@ -1,6 +1,7 @@
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { gunzipSync } from 'node:zlib';
 
 export const officialUrl = 'https://www.milkywayidle.com/game_data/marketplace.json';
 export const utcDay = (timestamp) => new Date(timestamp * 1000).toISOString().slice(0, 10);
@@ -175,4 +176,33 @@ export async function regenerateSummary(root, timestamp) {
   }
   await writeJson(join(root, 'summary.json'), { timestamp, items });
   return { days: selected.length, items: Object.keys(items).length };
+}
+
+// Rebuild whole days from their hourly raw snapshots (raw/<day>/<hour>.json.gz), then the 7-day summary as of the
+// newest snapshot among them. Days without raw files are skipped. Returns null when nothing was rebuilt.
+export async function rebuildDays(root, days) {
+  const replacements = {};
+  let latest = 0;
+  for (const day of days) {
+    const dir = join(root, 'raw', day);
+    let files;
+    try {
+      files = (await readdir(dir)).filter((name) => /^\d{2}\.json\.gz$/.test(name)).sort();
+    } catch (error) {
+      if (error.code === 'ENOENT') continue;
+      throw error;
+    }
+    if (!files.length) continue;
+    const snapshots = [];
+    for (const file of files) {
+      const value = JSON.parse(gunzipSync(await readFile(join(dir, file))));
+      if (utcDay(value.timestamp) !== day) throw new Error(`Snapshot day mismatch: ${day}/${file}`);
+      snapshots.push(value);
+      latest = Math.max(latest, value.timestamp);
+    }
+    replacements[day] = aggregateSnapshots(snapshots);
+  }
+  if (!latest) return null;
+  await mergeDays(root, replacements);
+  return { days: Object.keys(replacements), summary: await regenerateSummary(root, latest) };
 }
